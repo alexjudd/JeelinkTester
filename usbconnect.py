@@ -1,15 +1,11 @@
-import glib
 import pprint
 import serial
 import time
 import re
-
-from pyudev import Context, Monitor
-from pyudev.glib import GUDevMonitorObserver as MonitorObserver
-
-import ConfigParser
+import configparser
 import argparse
 import sys
+from pyudev import Context, Monitor, MonitorObserver
 
 #define JeeDevice class
 class JeeDevice:
@@ -28,13 +24,13 @@ class JeeDevice:
 
 		
 		
-profuse = False				#for reporting wordier statements
+profuse = False				#for debug reporting
 remoteDevice = JeeDevice()	#remote node for testing packets over radio
 currentDevice = JeeDevice()	#device currently being tested
 
 def vprint(message, level):
 	if profuse:
-		print message
+		print(message)
 
 def configArgParser():
 	parser = argparse.ArgumentParser()
@@ -48,24 +44,24 @@ def setConfiguration():
 	parser = configArgParser()
 	args = parser.parse_args()
 	if args.conf:
-		print 'configuration set'
+		print('configuration set')
 		configurationFile = args.conf
 	
-	print 'using configuration file ' + configurationFile
+	print('using configuration file ', configurationFile)
 	
 	if args.verbosity:
 		global profuse
 		profuse = True
-		print 'verbose output selected'
+		print('verbose output selected')
 		
 
-	Config=ConfigParser.ConfigParser()
+	Config=configparser.ConfigParser()
 	#print(Config)
 	try:
 		with open(configurationFile) as f:
 			Config.readfp(f)
 	except IOError:
-		print 'specified config file not found: {0}'.format(configurationFile)
+		print('specified config file not found: {0}'.format(configurationFile))
 		sys.exit(1)
 		
 
@@ -80,7 +76,7 @@ def setConfiguration():
 	remoteDevice.nodeId = dict1['nodeid']
 	remoteDevice.group = dict1['group']
 	remoteDevice.freq = dict1['frequency']
-	print "REMOTE DEVICE: " + remoteDevice.desc()
+	print('REMOTE DEVICE:', remoteDevice.desc())
 
 def openSerialInterface(device):
 	
@@ -102,7 +98,7 @@ def openSerialInterface(device):
 	currentDevice.group = match.group(3)
 	currentDevice.freq = match.group(4)
 	
-	print 'New device with ID {1} found on {0} with configuration {2}'.format(currentDevice.port, currentDevice.shortId, currentDevice.desc())
+	print('New device with ID {1} found on {0} with configuration {2}'.format(currentDevice.port, currentDevice.shortId, currentDevice.desc()))
 	
 	return ser
 	
@@ -112,7 +108,7 @@ def consumePreamble(device, ser):
 	
 	while True:
 		count = count + 1
-		line=ser.readline().strip()
+		line=ser.readline().strip().decode('utf-8')
 		vprint(line, 1)
 		if re.search(regex,line):
 			match = re.search(regex,line)
@@ -124,7 +120,7 @@ def consumePreamble(device, ser):
 def blinkLED(device, ser):
 	timeout = 0.1
 	
-	print 'blinking LED...'
+	print('blinking LED...')
 	for i in range(5):
 		ser.write(b'1l')
 		time.sleep(timeout)
@@ -134,52 +130,53 @@ def blinkLED(device, ser):
 		ser.read(ser.inWaiting())
 		
 def packetTest(device, ser):
-	print 'testing packets..'
+	print('testing packets..')
 	timeout = 0.1
 	numpacks = 5
 	regex = r'(OK)'
 	
 	#set up the device so it has the same group and ensure id's are different
 	if remoteDevice.group != currentDevice.group:
-		print "Groups don't match"
+		print('Groups don\'t match')
 	if remoteDevice.freq != currentDevice.freq:
-		print "Frequencies don't match"
+		print('Frequencies don\'t match')
 	if remoteDevice.nodeId == currentDevice.nodeId:
-		print 'node Id clash'
+		print('node Id clash')
 
 	oks = 0
 	for x in range(numpacks):
 		ser.write(b'0t')
 		time.sleep(timeout)
-		response = ser.read(ser.inWaiting())
+		response = ser.read(ser.inWaiting()).decode('utf-8')
 		if re.search(regex, response):
 			oks = oks +1
 			vprint (' '.join(response.split()),1)
 		time.sleep(timeout)
 	if oks == numpacks:
-		print 'PASSED ({0}/{1})'.format(oks,numpacks)
+		print('PASSED ({0}/{1})'.format(oks,numpacks))
 	else:
-		print 'FAILED ({0}/{1}) consider using -v for more info'.format(oks,numpacks) 	
+		print('FAILED ({0}/{1}) consider using -v for more info'.format(oks,numpacks))
 
-def device_event(observer, device):
-	ser = openSerialInterface(device)
+def device_event(action, device):
+	if action == 'add':
+		ser = openSerialInterface(device)
+		blinkLED(device, ser)
+		packetTest(device, ser)
+		ser.close()
+
+def main():
+	setConfiguration()	#configure testing environment variables
+	context = Context()
+	monitor = Monitor.from_netlink(context)
+	monitor.filter_by(subsystem='tty')
+	observer = MonitorObserver(monitor, device_event)
+	observer.start()
 	
-	#tests are in their own function
-	blinkLED(device, ser)
-	packetTest(device, ser)
-	ser.close()
+	while True:
+		n = input("Jeelink Tester v 1.0 type 'stop' to end\n")
+		if n == 'stop':
+			observer.stop()
+			break
 
-print 'Jeelink Tester v 1.0'
-setConfiguration()	#configure testing environment variables
-
-		
-context = Context()
-monitor = Monitor.from_netlink(context)
-
-monitor.filter_by(subsystem='tty')
-observer = MonitorObserver(monitor)
-
-observer.connect('device-added', device_event)
-monitor.start()
-
-glib.MainLoop().run()
+if __name__ == "__main__":
+	main()
